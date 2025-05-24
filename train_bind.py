@@ -1,5 +1,7 @@
 """Train the binding model with InfoNCE loss"""
 import os
+os.environ["WANDB__SERVICE_WAIT"] = "300"
+
 import pdb
 from typing import Dict, List, Optional
 from collections import defaultdict
@@ -47,7 +49,7 @@ def build_model_config(data_config):
 def compute_metrics(inputs: EvalPrediction) -> Dict:
     """Compute the metrics for the prediction."""
     metrics = defaultdict(list)
-    predictions = inputs.predictions[0]
+    predictions = inputs.predictions
     num_samples = len(predictions["node_index"])
     node_types = predictions["node_type"]
     all_tail_types = list(predictions['prediction'].keys())
@@ -62,13 +64,20 @@ def compute_metrics(inputs: EvalPrediction) -> Dict:
             label = label[label!=-100]
             if len(label) > 0:
                 # only consider the case where the label is not empty
-                rec_5 = len(set(pred[:5]).intersection(set(label))) / len(label)
-                metrics[f"head_{node_types_i}_tail_{tail_type}_rec@5"].append(rec_5)
-                rec_10 = len(set(pred[:10]).intersection(set(label))) / len(label)
-                metrics[f"head_{node_types_i}_tail_{tail_type}_rec@10"].append(rec_10)
-                rec_20 = len(set(pred[:20]).intersection(set(label))) / len(label)
-                metrics[f"head_{node_types_i}_tail_{tail_type}_rec@20"].append(rec_20)
-
+                for k in [5,10,20]:
+                    rec = len(set(pred[0,:k].tolist()).intersection(set(label.tolist()))) / len(label)
+                    metrics[f"head_{node_types_i}_tail_{tail_type}_rec@{k}"].append(rec)
+                    prec = len(set(pred[0,:k].tolist()).intersection(set(label.tolist()))) / k
+                    metrics[f"head_{node_types_i}_tail_{tail_type}_prec@{k}"].append(prec)
+                
+                # Compute MRR
+                mrr = 0.0
+                for rank, p in enumerate(pred[0].tolist()):
+                    if p in label.tolist():
+                        mrr = 1.0 / (rank + 1)
+                        break
+                metrics[f"head_{node_types_i}_tail_{tail_type}_mrr"].append(mrr)
+            
     # compute the sample average
     new_metrics = {}
     for k, v in metrics.items():
@@ -76,7 +85,17 @@ def compute_metrics(inputs: EvalPrediction) -> Dict:
 
     # TODO: average over all tail types if more than one tail type
     if len(all_tail_types) > 1:
-        pass
+        avg_metrics = {}
+        tail_type_prefixes = set([k.split("_tail_")[0] for k in metrics.keys()])
+        for prefix in tail_type_prefixes:
+            tail_metrics = [new_metrics[f"{prefix}_tail_{ttype}_{metric}"] for ttype in all_tail_types 
+                            for metric in [f'{d}@{e}' for d in ['rec','prec'] for e in [1,2,3,4,5,10,20]]+['mrr'] 
+                            if f"{prefix}_tail_{ttype}_{metric}" in new_metrics]
+            avg_metrics[prefix] = np.mean(tail_metrics)
+
+        # Update new_metrics with averaged metrics
+        for k, v in avg_metrics.items():
+            new_metrics[f"{k}_avg"] = v
 
     return new_metrics
 
@@ -90,9 +109,12 @@ def main(
     learning_rate=1.6e-3, # the learning ratesss
     n_epoch=10, # the number of training epochs
     weight_decay=1e-4, # the weight decay
+    evaluation_strategy='steps',
     eval_steps=1000, # the number of steps to evaluate the model
+    logging_steps=1000,
     save_dir="./checkpoints/model-1", # the directory to save the model
     dataloader_num_workers=4, # the number of workers for data loading
+    frequent_threshold=50,
     use_wandb=False, # whether to use wandb
     ):
     # load embedding
@@ -111,9 +133,9 @@ def main(
     val_data = ValDataset(**{"triplet_all":split_data["all"], 
                                "node_test":split_data["node_test"],
                                "node_all":split_data["node_all"],
-                               "target_relation": 2, # only consider the evaluation on one relation, 2: `interact with`
-                               "target_node_type_index": 1, # the index of the target node type: protein/gene is 1
-                               "frequent_threshold": 50, # the threshold of the frequent node
+                               "target_relation": None, # only consider the evaluation on one relation, 2: `interact with`
+                               "target_node_type_index": None, # the index of the target node type: protein/gene is 1
+                               "frequent_threshold": frequent_threshold, # the threshold of the frequent node
                                })
 
     # device
@@ -149,10 +171,11 @@ def main(
         per_device_eval_batch_size=2, # every node corresponds to multiple tail nodes
         learning_rate=learning_rate,
         weight_decay=weight_decay,
-        logging_steps=10,
-        save_steps=1000,
+        logging_steps=logging_steps,
+        save_steps=100,
         save_total_limit=5,
-        evaluation_strategy="steps",
+        do_eval=True,
+        evaluation_strategy=evaluation_strategy,
         eval_steps=eval_steps,
         max_grad_norm=1.0, # gradient clipping
         warmup_ratio=0.1,
@@ -178,10 +201,11 @@ def main(
         )
 
     # train the model
-    trainer.train()
+    trainer.train(resume_from_checkpoint=False) # resume_from_checkpoint 
 
     # save the model    
     trainer.save_model(save_dir)
+    torch.save(model.state_dict(), os.path.join(save_dir,"model.bin"))
 
     print("### Model Saved ###")
 
