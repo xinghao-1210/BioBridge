@@ -1,6 +1,6 @@
 # BioBridge
 
-This is the modified version based on the official implementation of the paper [BioBridge: Bridging Biomedical Foundation Models via Knowledge Graphs](https://arxiv.org/pdf/2310.03320.pdf) (ICLR 2024).
+This is the modified version on the official implementation of the paper [BioBridge: Bridging Biomedical Foundation Models via Knowledge Graphs](https://arxiv.org/pdf/2310.03320.pdf) (ICLR 2024).
 
 # Main components
 
