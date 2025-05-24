@@ -292,6 +292,10 @@ class BindingTrainer(Trainer):
                         pred["prediction"][k] = torch.tensor([-100])[None]
                     if k not in pred['label']:
                         pred["label"][k] = torch.tensor([-100])[None]
+                    if k not in pred["prediction_prob"]:
+                        pred["prediction_prob"][k] = torch.tensor([-100])[None]
+                    if k not in pred["prediction_cos"]:
+                        pred["prediction_cos"][k] = torch.tensor([-100])[None] #
 
             # concatenate the triplets
             preds_host = predictions if preds_host is None else preds_host + predictions
@@ -300,6 +304,8 @@ class BindingTrainer(Trainer):
         all_preds = defaultdict(list)
         all_preds["prediction"] = defaultdict(list)
         all_preds["label"] = defaultdict(list)
+        all_preds["prediction_prob"] = defaultdict(list) #
+        all_preds["prediction_cos"] = defaultdict(list) #
         num_samples = len(preds_host)
         for pred in preds_host:
             all_preds['node_index'].append(pred['node_index'])
@@ -307,11 +313,13 @@ class BindingTrainer(Trainer):
             for k in tail_node_types:
                 all_preds['prediction'][k].append(pred['prediction'][k])
                 all_preds['label'][k].append(pred['label'][k])
+                all_preds['prediction_prob'][k].append(pred['prediction_prob'][k]) #
+                all_preds['prediction_cos'][k].append(pred['prediction_cos'][k]) #
         
         # stack the tensors
         all_preds['node_index'] = torch.cat(all_preds['node_index'], dim=0)
         all_preds['node_type'] = torch.cat(all_preds['node_type'], dim=0)
-
+        
         # Metrics!
         if self.compute_metrics is not None and all_preds is not None:
             metrics = self.compute_metrics(EvalPrediction(predictions=all_preds))
@@ -363,6 +371,8 @@ class BindingTrainer(Trainer):
                 tail_node_index = torch.tensor(single_inputs.pop("tail_index"))
                 try:
                     outputs = model(**single_inputs)
+#                     print('outputs',outputs.keys()) #
+#                     print('outputs_emb',outputs['embeddings']) #
                 except Exception as err:
                     raise ValueError("Error occurs in model forward Error: {}".format(err))
                 predicted_tail_emb = outputs.get("embeddings", None)
@@ -394,6 +404,8 @@ class BindingTrainer(Trainer):
                            "node_type": torch.tensor([head_type_ids[0].item()]),
                            "prediction": {},
                            "label": {},
+                           "prediction_prob": {}, #
+                           "prediction_cos": {},
                            }
                 for tail_type_id in tail_type_ids.unique():
                     # get the query node embedding
@@ -407,12 +419,27 @@ class BindingTrainer(Trainer):
                     candidate_node_embs = candidate_node_embs.to(query_emb.device)
 
                     cos_similarity = cos_sim_fn(query_emb, candidate_node_embs)
+#                     print('head_node_index',head_node_index)#
+#                     print('tail_node_index',tail_node_index)#
+#                     print('predicted_tail_emb',predicted_tail_emb.shape,predicted_tail_emb)#
+#                     print('tail_type_id',tail_type_id)#
+#                     print('tail_type_index',tail_type_index)#
+#                     print('tail_node_index_label',tail_node_index_label)#
+#                     print('query_emb:',query_emb.shape,query_emb) #
+#                     print('candidate_node_embs:',candidate_node_embs.shape,candidate_node_embs) #
+#                     print('Norm_query_emb:',F.normalize(query_emb).shape,F.normalize(query_emb)) #
+#                     print('Norm_candidate_node_embs:',F.normalize(candidate_node_embs).shape,F.normalize(candidate_node_embs)) #
+#                     print('cos:',cos_similarity) #
                     candidate_node_indexes = encoded_nodes.node_index[tail_type_id]
                     prediction = candidate_node_indexes[torch.argsort(cos_similarity[0].cpu(), descending=True).numpy()]
+                    prediction_cos = torch.sort(cos_similarity[0].cpu(), descending=True)[0].numpy() #
+                    prediction_prob = (prediction_cos+1)/2 # 1-(np.arccos(prediction_prob)/np.pi) 
                     
                     # rank the target node embeddings based on similarity
                     outputs["prediction"][tail_type_id] = torch.tensor(prediction[None]).cpu()
                     outputs["label"][tail_type_id] = tail_node_index_label[None].cpu()
+                    outputs["prediction_prob"][tail_type_id] = torch.tensor(prediction_prob[None]).cpu() #
+                    outputs["prediction_cos"][tail_type_id] = torch.tensor(prediction_cos[None]).cpu() #
 
                 output_list.append(outputs)
         
